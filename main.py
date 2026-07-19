@@ -46,14 +46,15 @@ def is_expired(deadline: Optional[str]) -> bool:
 async def call_worker(url: str, req: DispatchRequest) -> dict:
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(
-            f"{url}/execute",
-            json={"question": req.question, "task_type": req.task_type, "deadline": req.deadline},
+            f"{url}/query",
+            json={"question": req.question, "top_k": 3, "max_tokens": 1024},
         )
         ct = resp.headers.get("content-type", "")
         if "application/json" not in ct:
             return {"status": "error", "answer": None, "error": f"non-JSON response ({ct})"}
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+        return {"status": "ok", "answer": data.get("answer"), "sources": data.get("sources", []), "confidence": data.get("confidence", 0.0)}
 
 
 @app.get("/health")
