@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: #050505;
+  color: #e5e7eb;
+}
+
+/* Ant Design dark theme overrides */
+.ant-modal-content,
+.ant-drawer-content {
+  background-color: #0a0a0a !important;
+  border: 1px solid #1f1f1f !important;
+}
+
+.ant-tree {
+  background: transparent !important;
+}
+
+.ant-descriptions-bordered .ant-descriptions-item-label {
+  background-color: #111 !important;
+}
+
+.ant-radar-area {
+  fill: rgba(157, 78, 221, 0.3) !important;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0a0a0a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 3px;
+}
