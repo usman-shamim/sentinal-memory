@@ -6,8 +6,11 @@ Start as a separate process alongside the FastAPI app.
 import os
 import asyncio
 from temporalio.client import Client
+from temporalio.worker import Worker
 
 from workflows import DreamCycleWorkflow, decay_sweep, archive_to_okf, promote_to_graph
+
+TASK_QUEUE = "adhd-memory-tasks"
 
 
 async def main():
@@ -17,13 +20,12 @@ async def main():
     client = await Client.connect(temporal_host)
     
     print("Starting Dream Cycle worker...")
-    await client.start_worker(
+    worker = Worker(
+        client,
+        task_queue=TASK_QUEUE,
         workflows=[DreamCycleWorkflow],
         activities=[decay_sweep, archive_to_okf, promote_to_graph],
-        task_queue="adhd-memory-tasks",
     )
-    
-    print("Worker started. Waiting for tasks...")
     
     # Register the cron schedule
     from temporalio.client import Schedule, ScheduleActionStartWorkflow, ScheduleSpec
@@ -35,7 +37,7 @@ async def main():
                 action=ScheduleActionStartWorkflow(
                     DreamCycleWorkflow.run,
                     args=["agent-launch-pad"],
-                    task_queue="adhd-memory-tasks",
+                    task_queue=TASK_QUEUE,
                 ),
                 spec=ScheduleSpec(cron="0 3 * * *"),  # 03:00 AM daily
             ),
@@ -44,9 +46,8 @@ async def main():
     except Exception as e:
         print(f"Schedule may already exist: {e}")
     
-    # Keep running
-    while True:
-        await asyncio.sleep(3600)
+    print("Worker started. Waiting for tasks...")
+    await worker.run()
 
 
 if __name__ == "__main__":
