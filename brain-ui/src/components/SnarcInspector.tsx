@@ -1,7 +1,109 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Drawer, Descriptions, Button, Empty, Tag } from 'antd';
 import { DeleteOutlined } from '@ant-design/icons';
 import { useBrainStore } from '../store/brainStore';
+
+// Simple SVG Radar Chart (no external dependency needed)
+function RadarChart({ data }: { data: { dimension: string; value: number }[] }) {
+  const size = 200;
+  const center = size / 2;
+  const radius = 80;
+  const levels = 5;
+  const angleStep = (2 * Math.PI) / data.length;
+
+  const getPoint = (index: number, value: number) => {
+    const angle = index * angleStep - Math.PI / 2;
+    const r = radius * value;
+    return {
+      x: center + r * Math.cos(angle),
+      y: center + r * Math.sin(angle),
+    };
+  };
+
+  // Generate polygon points for data
+  const dataPoints = data
+    .map((d, i) => {
+      const p = getPoint(i, d.value);
+      return `${p.x},${p.y}`;
+    })
+    .join(' ');
+
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      {/* Grid circles */}
+      {Array.from({ length: levels }).map((_, i) => {
+        const r = (radius * (i + 1)) / levels;
+        return (
+          <circle
+            key={i}
+            cx={center}
+            cy={center}
+            r={r}
+            fill="none"
+            stroke="#1f1f1f"
+            strokeWidth="1"
+          />
+        );
+      })}
+
+      {/* Axis lines */}
+      {data.map((_, i) => {
+        const p = getPoint(i, 1);
+        return (
+          <line
+            key={i}
+            x1={center}
+            y1={center}
+            x2={p.x}
+            y2={p.y}
+            stroke="#1f1f1f"
+            strokeWidth="1"
+          />
+        );
+      })}
+
+      {/* Data polygon */}
+      <polygon
+        points={dataPoints}
+        fill="rgba(157, 78, 221, 0.3)"
+        stroke="#9d4edd"
+        strokeWidth="2"
+      />
+
+      {/* Data points */}
+      {data.map((d, i) => {
+        const p = getPoint(i, d.value);
+        return (
+          <circle
+            key={i}
+            cx={p.x}
+            cy={p.y}
+            r="4"
+            fill="#9d4edd"
+          />
+        );
+      })}
+
+      {/* Labels */}
+      {data.map((d, i) => {
+        const p = getPoint(i, 1.2);
+        return (
+          <text
+            key={i}
+            x={p.x}
+            y={p.y}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            fill="#9ca3af"
+            fontSize="10"
+          >
+            {d.dimension}
+          </text>
+        );
+      })}
+    </svg>
+  );
+}
 
 export function SnarcInspector() {
   const selectedMemory = useBrainStore((s) => s.selectedMemory);
@@ -15,15 +117,16 @@ export function SnarcInspector() {
     }
   };
 
-  const radarData = selectedMemory?.snarc
-    ? [
-        { dimension: 'Surprise', value: selectedMemory.snarc.surprise || 0 },
-        { dimension: 'Novelty', value: selectedMemory.snarc.novelty || 0 },
-        { dimension: 'Arousal', value: selectedMemory.snarc.arousal || 0 },
-        { dimension: 'Reward', value: selectedMemory.snarc.reward || 0 },
-        { dimension: 'Conflict', value: selectedMemory.snarc.conflict || 0 },
-      ]
-    : [];
+  const radarData = useMemo(() => {
+    if (!selectedMemory?.snarc) return [];
+    return [
+      { dimension: 'Surprise', value: selectedMemory.snarc.surprise || 0 },
+      { dimension: 'Novelty', value: selectedMemory.snarc.novelty || 0 },
+      { dimension: 'Arousal', value: selectedMemory.snarc.arousal || 0 },
+      { dimension: 'Reward', value: selectedMemory.snarc.reward || 0 },
+      { dimension: 'Conflict', value: selectedMemory.snarc.conflict || 0 },
+    ];
+  }, [selectedMemory]);
 
   return (
     <Drawer
@@ -78,27 +181,11 @@ export function SnarcInspector() {
             </Descriptions.Item>
           </Descriptions>
 
-          {/* SNARC Radar Chart (CSS-based) */}
+          {/* SNARC Radar Chart */}
           <div>
             <h3 className="text-sm text-gray-400 mb-3 font-mono">SNARC SALIENCE PROFILE</h3>
-            <div className="bg-gray-900 rounded-lg p-4 border border-gray-800">
-              {/* Simple bar visualization instead of Ant Design radar */}
-              <div className="space-y-3">
-                {radarData.map((item) => (
-                  <div key={item.dimension} className="flex items-center gap-3">
-                    <span className="text-xs text-gray-500 w-20">{item.dimension}</span>
-                    <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-purple-500 rounded-full transition-all duration-300"
-                        style={{ width: `${item.value * 100}%` }}
-                      />
-                    </div>
-                    <span className="text-xs text-gray-400 font-mono w-10 text-right">
-                      {(item.value * 100).toFixed(0)}%
-                    </span>
-                  </div>
-                ))}
-              </div>
+            <div className="bg-gray-900 rounded-lg p-4 border border-gray-800 flex justify-center">
+              <RadarChart data={radarData} />
             </div>
           </div>
 

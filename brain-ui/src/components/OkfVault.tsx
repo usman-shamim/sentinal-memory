@@ -1,22 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect } from 'react';
 import { Modal, Tree, Tag, Empty, message } from 'antd';
 import { FolderOutlined, FileTextOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useBrainStore } from '../store/brainStore';
-import axios from 'axios';
-
-interface TreeNode {
-  title: string;
-  key: string;
-  icon?: React.ReactNode;
-  children?: TreeNode[];
-  isLeaf?: boolean;
-}
 
 export function OkfVault() {
   const isVaultOpen = useBrainStore((s) => s.isVaultOpen);
   const setVaultOpen = useBrainStore((s) => s.setVaultOpen);
-  const [treeData, setTreeData] = useState<TreeNode[]>([]);
-  const [loading, setLoading] = useState(false);
+  const vaultTree = useBrainStore((s) => s.vaultTree);
+  const fetchVault = useBrainStore((s) => s.fetchVault);
+  const restoreMemory = useBrainStore((s) => s.restoreMemory);
 
   useEffect(() => {
     if (isVaultOpen) {
@@ -24,36 +16,31 @@ export function OkfVault() {
     }
   }, [isVaultOpen]);
 
-  const fetchVault = async () => {
-    setLoading(true);
-    try {
-      const res = await axios.get('http://localhost:8400/vault', {
-        params: { project: 'agent-launch-pad' },
-      });
-      
-      // Convert backend tree format to Ant Design Tree format
-      const tree: TreeNode[] = (res.data.tree || []).map((item: any) => ({
-        title: item.title,
-        key: item.key,
-        icon: <FolderOutlined className="text-yellow-500" />,
-        children: (item.children || []).map((child: any) => ({
-          title: child.title,
-          key: child.key,
-          icon: <FileTextOutlined className="text-gray-400" />,
-          isLeaf: true,
-        })),
-      }));
-      
-      setTreeData(tree);
-    } catch (err) {
-      console.error('Failed to fetch vault:', err);
-    }
-    setLoading(false);
-  };
+  // Convert backend tree format to Ant Design Tree format
+  const treeData = vaultTree.map((item: any) => ({
+    title: item.title,
+    key: item.key,
+    icon: <FolderOutlined className="text-yellow-500" />,
+    children: (item.children || []).map((child: any) => ({
+      title: child.title,
+      key: child.key,
+      icon: <FileTextOutlined className="text-gray-400" />,
+      isLeaf: true,
+    })),
+  }));
 
-  const handleRestore = (key: string) => {
-    message.success(`Restoring memory to active status...`);
-    // In production: axios.post('http://localhost:8400/restore', { memory_id: key })
+  const handleRestore = async (key: string) => {
+    // Extract memory_id from the file path (e.g., "PSX/12345678-1234-1234-1234-123456789abc.md")
+    const parts = key.split('/');
+    const fileName = parts[parts.length - 1];
+    const memoryId = fileName.replace('.md', '');
+    
+    try {
+      await restoreMemory(memoryId);
+      message.success(`Restored memory ${memoryId.slice(0, 8)}...`);
+    } catch (err) {
+      message.error('Failed to restore memory');
+    }
   };
 
   return (

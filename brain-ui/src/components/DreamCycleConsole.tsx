@@ -1,53 +1,79 @@
-import React, { useState } from 'react';
-import { Slider, Button, Tooltip } from 'antd';
-import { PlayCircleOutlined, PauseCircleOutlined } from '@ant-design/icons';
+import React, { useEffect, useState } from 'react';
+import { Button, Timeline, Tag } from 'antd';
+import { CheckCircleOutlined, ClockCircleOutlined, SyncOutlined, CloseCircleOutlined } from '@ant-design/icons';
+import { useBrainStore } from '../store/brainStore';
 
-const DREAM_STEPS = [
-  { time: '00:00', label: 'Idle', description: 'System waiting for consolidation' },
-  { time: '03:00', label: 'Decay Sweep', description: 'Applying Ebbinghaus decay to stale memories' },
-  { time: '03:15', label: 'Archive to OKF', description: 'Moving decayed memories to OKF bundles' },
-  { time: '03:45', label: 'Promote to Graph', description: 'High-hit memories become semantic nodes' },
-  { time: '04:00', label: 'Complete', description: 'Consolidation finished, memory optimized' },
-];
+const STATUS_MAP: Record<string, { color: string; icon: React.ReactNode }> = {
+  Completed: { color: 'green', icon: <CheckCircleOutlined /> },
+  Running: { color: 'blue', icon: <SyncOutlined spin /> },
+  'Not Started': { color: 'gray', icon: <ClockCircleOutlined /> },
+  Failed: { color: 'red', icon: <CloseCircleOutlined /> },
+  error: { color: 'red', icon: <CloseCircleOutlined /> },
+};
 
 export function DreamCycleConsole() {
-  const [step, setStep] = useState(0);
-  const [playing, setPlaying] = useState(false);
+  const dreamCycleStatus = useBrainStore((s) => s.dreamCycleStatus);
+  const dreamCycleRuns = useBrainStore((s) => s.dreamCycleRuns);
+  const fetchDreamCycleStatus = useBrainStore((s) => s.fetchDreamCycleStatus);
 
-  const currentStep = DREAM_STEPS[step];
+  useEffect(() => {
+    fetchDreamCycleStatus();
+    const interval = setInterval(fetchDreamCycleStatus, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const statusInfo = STATUS_MAP[dreamCycleStatus] || STATUS_MAP['Not Started'];
+
+  const timelineItems = dreamCycleRuns.length > 0
+    ? dreamCycleRuns.map((run) => ({
+        color: STATUS_MAP[run.status]?.color || 'gray',
+        children: (
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-white">{run.id?.slice(0, 12) || 'N/A'}</span>
+            <Tag color={STATUS_MAP[run.status]?.color}>{run.status}</Tag>
+            {run.start_time && (
+              <span className="text-xs text-gray-500">
+                {new Date(run.start_time).toLocaleString()}
+              </span>
+            )}
+          </div>
+        ),
+      }))
+    : [
+        {
+          color: 'gray',
+          children: (
+            <span className="text-sm text-gray-500">No workflow runs yet</span>
+          ),
+        },
+      ];
 
   return (
-    <div className="h-16 bg-black/50 border-t border-gray-800 flex items-center px-6 gap-6 z-20">
-      {/* Play/Pause */}
-      <Button
-        type="text"
-        icon={playing ? <PauseCircleOutlined /> : <PlayCircleOutlined />}
-        onClick={() => setPlaying(!playing)}
-        className="text-purple-400 !text-xl"
-      />
+    <div className="h-24 bg-black/50 border-t border-gray-800 flex items-center px-6 gap-6 z-20">
+      {/* Status indicator */}
+      <div className="flex items-center gap-3 min-w-[200px]">
+        {statusInfo.icon}
+        <div>
+          <div className="text-xs text-gray-500 font-mono">DREAM CYCLE</div>
+          <div className="text-sm text-white">{dreamCycleStatus}</div>
+        </div>
+      </div>
 
-      {/* Timeline Slider */}
-      <div className="flex-1 flex items-center gap-4">
-        <span className="text-xs text-gray-500 font-mono w-12">{currentStep.time}</span>
-        <Slider
-          className="flex-1 !w-full"
-          min={0}
-          max={DREAM_STEPS.length - 1}
-          value={step}
-          onChange={setStep}
-          tooltip={{ formatter: () => currentStep.label }}
-          styles={{
-            track: { background: '#9d4edd' },
-            handle: { borderColor: '#9d4edd' },
-          }}
+      {/* Timeline */}
+      <div className="flex-1 overflow-hidden">
+        <Timeline
+          items={timelineItems.slice(0, 3)}
+          className="!mb-0"
         />
       </div>
 
-      {/* Step Label */}
-      <div className="w-48 text-right">
-        <div className="text-xs text-purple-400 font-mono">{currentStep.label}</div>
-        <div className="text-[10px] text-gray-600">{currentStep.description}</div>
-      </div>
+      {/* Refresh button */}
+      <Button
+        type="text"
+        icon={<SyncOutlined />}
+        onClick={fetchDreamCycleStatus}
+        className="text-gray-500"
+      />
     </div>
   );
 }

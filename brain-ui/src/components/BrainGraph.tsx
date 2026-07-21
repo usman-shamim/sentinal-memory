@@ -1,5 +1,4 @@
-import React, { useRef, useEffect, useMemo } from 'react';
-import { Canvas } from '@react-three/fiber';
+import React, { useRef, useEffect, useMemo, useState } from 'react';
 import { useBrainStore } from '../store/brainStore';
 
 // Dynamic import for react-force-graph-3d to avoid SSR issues
@@ -10,12 +9,18 @@ export function BrainGraph() {
   const graphData = useBrainStore((s) => s.graphData);
   const setSelectedMemory = useBrainStore((s) => s.setSelectedMemory);
   const focusTopic = useBrainStore((s) => s.focusTopic);
+  const [THREE, setTHREE] = useState<any>(null);
+
+  // Load Three.js dynamically
+  useEffect(() => {
+    import('three').then((mod) => setTHREE(mod));
+  }, []);
 
   // Custom node rendering with Three.js
   const nodeThreeObject = useMemo(() => {
+    if (!THREE) return undefined;
+    
     return (node: any) => {
-      // Dynamic import THREE
-      const THREE = require('three');
       const geometry = new THREE.SphereGeometry(
         Math.max(0.5, (node.val || 1) * 0.8),
         16,
@@ -28,7 +33,7 @@ export function BrainGraph() {
       });
       return new THREE.Mesh(geometry, material);
     };
-  }, [focusTopic]);
+  }, [THREE, focusTopic]);
 
   // Node hover label
   const nodeLabel = (node: any) => {
@@ -51,19 +56,21 @@ export function BrainGraph() {
   return (
     <div className="w-full h-full bg-[#050505]">
       <React.Suspense fallback={<div className="flex items-center justify-center h-full text-gray-500">Loading 3D Graph...</div>}>
-        <ForceGraph3D
-          ref={fgRef}
-          graphData={graphData}
-          nodeThreeObject={nodeThreeObject}
-          nodeLabel={nodeLabel}
-          onNodeClick={handleNodeClick}
-          backgroundColor="#050505"
-          showNavInfo={false}
-          nodeRelSize={1}
-          linkColor={() => '#1f1f1f'}
-          linkOpacity={0.3}
-          d3VelocityDecay={0.3}
-        />
+        {THREE && (
+          <ForceGraph3D
+            ref={fgRef}
+            graphData={graphData}
+            nodeThreeObject={nodeThreeObject}
+            nodeLabel={nodeLabel}
+            onNodeClick={handleNodeClick}
+            backgroundColor="#050505"
+            showNavInfo={false}
+            nodeRelSize={1}
+            linkColor={() => '#1f1f1f'}
+            linkOpacity={0.3}
+            d3VelocityDecay={0.3}
+          />
+        )}
       </React.Suspense>
     </div>
   );

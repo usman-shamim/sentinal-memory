@@ -1,18 +1,27 @@
 /**
- * Brain Store — Zustand state management for the ADHD Brain Dashboard.
- * Bridges the 3D graph, 7 working memory slots, and inspector.
+ * Brain Store v2.0 — Zustand state management with real API calls + auth.
  */
 
 import { create } from 'zustand';
 import axios from 'axios';
 
-const API_BASE = 'http://localhost:8400';
+const API_BASE = '/api';
+
+// Auth token from env or localStorage
+const AUTH_TOKEN = localStorage.getItem('brain_auth_token') || '';
+
+const api = axios.create({
+  baseURL: API_BASE,
+  headers: {
+    'Authorization': AUTH_TOKEN ? `Bearer ${AUTH_TOKEN}` : '',
+  },
+});
 
 interface Memory {
   id: string;
   content: string;
-  val: number;        // hit_count + 1 (node size)
-  opacity: number;    // decay_score (fading effect)
+  val: number;
+  opacity: number;
   cues: string[];
   snarc: {
     surprise: number;
@@ -42,33 +51,39 @@ interface GraphLink {
   cue: string;
 }
 
+interface DreamCycleRun {
+  id: string;
+  status: string;
+  start_time: string | null;
+}
+
 interface BrainState {
-  // Working Memory (7 slots)
   workingMemory: Memory[];
   focusTopic: string | null;
-
-  // Graph Data
   graphData: { nodes: GraphNode[]; links: GraphLink[] };
   selectedMemory: Memory | null;
-
-  // UI State
   isCommandOpen: boolean;
   isVaultOpen: boolean;
   isInspectorOpen: boolean;
+  dreamCycleStatus: string;
+  dreamCycleRuns: DreamCycleRun[];
+  vaultTree: any[];
 
-  // Actions
   fetchGraph: () => Promise<void>;
   remember: (data: any) => Promise<any>;
   recall: (cue: string, query: string) => Promise<void>;
   focus: (topic: string) => Promise<void>;
   forget: (memoryId: string) => Promise<void>;
+  fetchDreamCycleStatus: () => Promise<void>;
+  fetchVault: () => Promise<void>;
+  restoreMemory: (memoryId: string) => Promise<void>;
   setSelectedMemory: (mem: Memory | null) => void;
   setCommandOpen: (val: boolean) => void;
   setVaultOpen: (val: boolean) => void;
+  setAuthToken: (token: string) => void;
 }
 
 export const useBrainStore = create<BrainState>((set, get) => ({
-  // Initial state
   workingMemory: [],
   focusTopic: null,
   graphData: { nodes: [], links: [] },
@@ -76,11 +91,13 @@ export const useBrainStore = create<BrainState>((set, get) => ({
   isCommandOpen: false,
   isVaultOpen: false,
   isInspectorOpen: false,
+  dreamCycleStatus: 'not_started',
+  dreamCycleRuns: [],
+  vaultTree: [],
 
-  // Fetch graph data from backend
   fetchGraph: async () => {
     try {
-      const res = await axios.get(`${API_BASE}/graph`, {
+      const res = await api.get('/graph', {
         params: { project: 'agent-launch-pad', limit: 100 },
       });
 
@@ -95,7 +112,6 @@ export const useBrainStore = create<BrainState>((set, get) => ({
         status: m.status,
       }));
 
-      // Build links from shared cues
       const cueToNodes: Record<string, string[]> = {};
       nodes.forEach((node) => {
         node.cues.forEach((cue) => {
@@ -119,23 +135,19 @@ export const useBrainStore = create<BrainState>((set, get) => ({
     }
   },
 
-  // Remember an event
   remember: async (data) => {
-    const res = await axios.post(`${API_BASE}/remember`, data);
-    // Refresh graph after remembering
+    const res = await api.post('/remember', data);
     await get().fetchGraph();
     return res.data;
   },
 
-  // Recall by cue
   recall: async (cue, query) => {
-    const res = await axios.post(`${API_BASE}/recall`, {
+    const res = await api.post('/recall', {
       project: 'agent-launch-pad',
       cue,
       query_text: query,
     });
 
-    // Push to working memory (hard cap 7)
     const currentWM = get().workingMemory;
     const newMems = res.data.memories.map((m: any) => ({
       ...m,
@@ -146,29 +158,58 @@ export const useBrainStore = create<BrainState>((set, get) => ({
     set({ workingMemory: newWM });
   },
 
-  // Set hyperfocus topic
   focus: async (topic) => {
-    await axios.post(`${API_BASE}/focus`, {
+    await api.post('/focus', {
       project: 'agent-launch-pad',
       topic,
     });
     set({ focusTopic: topic });
-    // Auto-clear after 30 min
     setTimeout(() => set({ focusTopic: null }), 1800000);
   },
 
-  // Force decay (forget)
   forget: async (memoryId) => {
-    await axios.post(`${API_BASE}/forget`, { memory_id: memoryId });
-    // Remove from working memory if present
+    await api.post('/forget', { memory_id: memoryId });
     const wm = get().workingMemory.filter((m) => m.id !== memoryId);
     set({ workingMemory: wm, selectedMemory: null });
-    // Refresh graph
     await get().fetchGraph();
   },
 
-  // UI state setters
+  fetchDreamCycleStatus: async () => {
+    try {
+      const res = await api.get('/dream-cycle/status');
+      set({
+        dreamCycleStatus: res.data.status,
+        dreamCycleRuns: res.data.runs || [],
+      });
+    } catch (err) {
+      console.error('Failed to fetch dream cycle status:', err);
+    }
+  },
+
+  fetchVault: async () => {
+    try {
+      const res = await api.get('/vault', {
+        params: { project: 'agent-launch-pad' },
+      });
+      set({ vaultTree: res.data.tree || [] });
+    } catch (err) {
+      console.error('Failed to fetch vault:', err);
+    }
+  },
+
+  restoreMemory: async (memoryId) => {
+    await api.post('/restore', null, {
+      params: { memory_id: memoryId, project: 'agent-launch-pad' },
+    });
+    await get().fetchVault();
+    await get().fetchGraph();
+  },
+
   setSelectedMemory: (mem) => set({ selectedMemory: mem, isInspectorOpen: !!mem }),
   setCommandOpen: (val) => set({ isCommandOpen: val }),
   setVaultOpen: (val) => set({ isVaultOpen: val }),
+  setAuthToken: (token) => {
+    localStorage.setItem('brain_auth_token', token);
+    api.defaults.headers['Authorization'] = `Bearer ${token}`;
+  },
 }));

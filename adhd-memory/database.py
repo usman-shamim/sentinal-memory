@@ -1,5 +1,6 @@
 """
 Database layer — asyncpg connection pool + schema init + CRUD operations.
+Vector dimension: 384 (all-MiniLM-L6-v2)
 """
 
 import os
@@ -7,7 +8,7 @@ import uuid
 import asyncpg
 from typing import List, Dict, Optional
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://sentinel:VI8sHTvPW3GrkHoSCERc9Zdg7QcggVg+@cognee-postgres:5432/cognee")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://cognee:cognee@cognee-postgres:5432/cognee_db")
 
 _pool: Optional[asyncpg.Pool] = None
 
@@ -18,7 +19,7 @@ CREATE TABLE IF NOT EXISTS episodic_memory (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project TEXT NOT NULL,
     content TEXT NOT NULL,
-    embedding VECTOR(1536),
+    embedding VECTOR(384),
     salience FLOAT NOT NULL,
     snarc JSONB NOT NULL,
     cues TEXT[] NOT NULL,
@@ -33,25 +34,6 @@ CREATE TABLE IF NOT EXISTS episodic_memory (
 
 CREATE INDEX IF NOT EXISTS idx_episodic_cues ON episodic_memory USING GIN (cues);
 CREATE INDEX IF NOT EXISTS idx_episodic_project_status ON episodic_memory (project, status);
-
-CREATE TABLE IF NOT EXISTS semantic_nodes (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    project TEXT NOT NULL,
-    label TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    weight FLOAT DEFAULT 1.0,
-    okf_bundle_id TEXT,
-    created_at TIMESTAMPTZ DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS semantic_edges (
-    src UUID REFERENCES semantic_nodes(id),
-    dst UUID REFERENCES semantic_nodes(id),
-    rel TEXT NOT NULL,
-    weight FLOAT DEFAULT 1.0,
-    valid_at TIMESTAMPTZ,
-    PRIMARY KEY (src, dst, rel)
-);
 """
 
 
@@ -67,6 +49,14 @@ async def init_db():
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(SCHEMA_SQL)
+        # Create vector index separately (requires data)
+        try:
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_episodic_embedding 
+                ON episodic_memory USING ivfflat (embedding vector_cosine_ops)
+            """)
+        except Exception:
+            pass  # ivfflat requires data to build index
 
 
 async def remember_in_db(
@@ -80,28 +70,44 @@ async def remember_in_db(
     """Insert a new episodic memory. Returns the memory ID."""
     pool = await get_pool()
     async with pool.acquire() as conn:
+        import json
         row = await conn.fetchrow("""
             INSERT INTO episodic_memory (project, content, embedding, salience, snarc, cues, valid_at)
             VALUES ($1, $2, $3::vector, $4, $5::jsonb, $6, now())
             RETURNING id
-        """, project, content, str(embedding), salience, __import__('json').dumps(snarc), cues)
+        """, project, content, str(embedding), salience, json.dumps(snarc), cues)
         return str(row["id"])
 
 
-async def recall_from_db(memory_ids: List[str]) -> List[Dict]:
-    """Fetch memories by IDs, ordered by decay_score DESC."""
+async def recall_from_db(memory_ids: List[str], query_embedding: Optional[List[float]] = None) -> List[Dict]:
+    """Fetch memories by IDs with optional vector similarity ranking."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         uuids = [uuid.UUID(mid) for mid in memory_ids]
-        rows = await conn.fetch("""
-            SELECT id, project, content, salience, snarc, cues, 
-                   decay_score, stability, hit_count, status,
-                   valid_at, recorded_at, last_hit_at
-            FROM episodic_memory
-            WHERE id = ANY($1) AND status = 'active'
-            ORDER BY decay_score DESC
-            LIMIT 5
-        """, uuids)
+        
+        if query_embedding:
+            # Order by decay_score * similarity
+            rows = await conn.fetch("""
+                SELECT id, project, content, salience, snarc, cues, 
+                       decay_score, stability, hit_count, status,
+                       valid_at, recorded_at, last_hit_at,
+                       1 - (embedding <=> $2::vector) AS similarity
+                FROM episodic_memory
+                WHERE id = ANY($1) AND status = 'active'
+                ORDER BY (decay_score * (1 - (embedding <=> $2::vector))) DESC
+                LIMIT 5
+            """, uuids, str(query_embedding))
+        else:
+            # Order by decay_score only
+            rows = await conn.fetch("""
+                SELECT id, project, content, salience, snarc, cues, 
+                       decay_score, stability, hit_count, status,
+                       valid_at, recorded_at, last_hit_at
+                FROM episodic_memory
+                WHERE id = ANY($1) AND status = 'active'
+                ORDER BY decay_score DESC
+                LIMIT 5
+            """, uuids)
         
         return [
             {
@@ -118,6 +124,7 @@ async def recall_from_db(memory_ids: List[str]) -> List[Dict]:
                 "valid_at": row["valid_at"].isoformat() if row["valid_at"] else None,
                 "recorded_at": row["recorded_at"].isoformat() if row["recorded_at"] else None,
                 "last_hit_at": row["last_hit_at"].isoformat() if row["last_hit_at"] else None,
+                "similarity": float(row.get("similarity", 0)) if "similarity" in row.keys() else None,
             }
             for row in rows
         ]

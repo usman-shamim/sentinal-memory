@@ -1,18 +1,18 @@
 """
-ADHD Memory Layer — Biologically-inspired memory management for AI agents.
+ADHD Memory Layer v2.0 — Production-ready biologically-inspired memory management.
 
-Port 8400, FastAPI + Redis + PostgreSQL+pgvector + Temporal.
-Follows Panaversity Agent Architecture Standard v2.3.
+Port 8400, FastAPI + sentence-transformers + Redis + PostgreSQL+pgvector + Temporal.
 """
 
 import os
+import json
 import uuid
 import asyncio
 import uvicorn
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import init_db, remember_in_db, recall_from_db, forget_in_db, get_graph_data
@@ -21,15 +21,17 @@ from redis_client import (
     add_to_cue_index, get_cue_ids, remove_from_cue_index,
     set_focus, get_focus, remove_from_working_memory
 )
-from heuristics import calculate_salience, apply_decay
-from models import RememberRequest, RecallRequest, FocusRequest, ForgetRequest, MemoryResponse
+from heuristics import calculate_salience, apply_decay, calculate_snarc
+from embeddings import generate_embedding
+from models import RememberRequest, RecallRequest, FocusRequest, ForgetRequest
+from auth import auth_middleware
 
 # ── Config ────────────────────────────────────────────────────────────
 
 PORT = int(os.environ.get("PORT", 8400))
 ARCHIVE_PATH = os.environ.get("ARCHIVE_PATH", "/data/brain-archive")
 
-app = FastAPI(title="ADHD Memory Layer", version="1.0.0")
+app = FastAPI(title="ADHD Memory Layer", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,6 +40,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Add auth middleware
+app.middleware("http")(auth_middleware)
 
 # ── Startup / Shutdown ───────────────────────────────────────────────
 
@@ -50,7 +55,7 @@ async def startup():
 
 @app.get("/health")
 async def health():
-    """Deep health — checks Postgres, Redis, Temporal."""
+    """Deep health — checks Postgres, Redis."""
     from database import get_pool
     from redis_client import get_redis
     
@@ -76,7 +81,7 @@ async def health():
         checks["redis"] = f"error: {e}"
         all_ok = False
     
-    return {"status": "ok" if all_ok else "degraded", "checks": checks, "version": "1.0.0"}
+    return {"status": "ok" if all_ok else "degraded", "checks": checks, "version": "2.0.0"}
 
 # ── POST /remember ───────────────────────────────────────────────────
 
@@ -90,12 +95,10 @@ async def remember(req: RememberRequest):
     if salience < 0.2:
         return {"status": "dropped", "salience": salience}
     
-    # 3. Generate dummy embedding (1536 dims)
-    import random
-    embedding = [random.random() for _ in range(1536)]
+    # 3. Generate real 384-dim embedding
+    embedding = generate_embedding(req.content)
     
     # 4. Calculate SNARC breakdown
-    from heuristics import calculate_snarc
     snarc = calculate_snarc(req.event_data)
     
     # 5. Insert into Postgres
@@ -113,15 +116,17 @@ async def remember(req: RememberRequest):
         await add_to_cue_index(req.project, cue, memory_id)
     
     # 7. If salient enough, add to working memory
+    in_wm = False
     if salience >= 0.6:
         await add_to_working_memory(req.project, memory_id, salience)
+        in_wm = True
     
     return {
         "status": "stored",
         "id": memory_id,
         "salience": salience,
         "snarc": snarc,
-        "in_working_memory": salience >= 0.6,
+        "in_working_memory": in_wm,
     }
 
 # ── POST /recall ─────────────────────────────────────────────────────
@@ -144,10 +149,15 @@ async def recall(req: RecallRequest):
     if not all_ids:
         return {"memories": [], "source": "none"}
     
-    # 4. Fetch from Postgres with decay-weighted scoring
-    memories = await recall_from_db(all_ids)
+    # 4. Generate query embedding for similarity search
+    query_embedding = None
+    if req.query_text:
+        query_embedding = generate_embedding(req.query_text)
     
-    # 5. Spaced Repetition: update hit_count and stability
+    # 5. Fetch from Postgres with decay-weighted scoring
+    memories = await recall_from_db(all_ids, query_embedding)
+    
+    # 6. Spaced Repetition: update hit_count and stability
     for mem in memories:
         await _update_hit(mem["id"])
     
@@ -208,7 +218,6 @@ async def forget(req: ForgetRequest):
 async def _export_to_okf(memory: dict):
     """Write memory to OKF v0.1 bundle on disk."""
     import yaml
-    import json
     
     project = memory["project"]
     cues = memory["cues"]
@@ -225,7 +234,7 @@ async def _export_to_okf(memory: dict):
         "recorded_at": memory["recorded_at"].isoformat() if memory["recorded_at"] else "",
         "salience": memory["salience"],
         "snarc": memory["snarc"],
-        "provenance": "adhd-memory-layer-v1.0",
+        "provenance": "adhd-memory-layer-v2.0",
     }
     
     # Build Markdown content
@@ -283,7 +292,7 @@ async def graph(project: str = "agent-launch-pad", limit: int = 100):
 
 @app.get("/vault")
 async def vault(project: str = "agent-launch-pad"):
-    """List archived OKF bundles as a file tree."""
+    """List archived OKF bundles as a file tree from /data/brain-archive/."""
     project_dir = os.path.join(ARCHIVE_PATH, project)
     if not os.path.exists(project_dir):
         return {"tree": []}
@@ -331,6 +340,37 @@ async def restore(memory_id: str, project: str = "agent-launch-pad"):
             await add_to_cue_index(project, cue, memory_id)
     
     return {"status": "restored", "id": memory_id}
+
+# ── GET /dream-cycle/status ──────────────────────────────────────────
+
+@app.get("/dream-cycle/status")
+async def dream_cycle_status():
+    """Get the status of the latest DreamCycleWorkflow from Temporal."""
+    temporal_host = os.environ.get("TEMPORAL_HOST", "temporal:7233")
+    
+    try:
+        from temporalio.client import Client
+        client = await Client.connect(temporal_host)
+        
+        # List recent workflow executions
+        workflows = []
+        async for workflow in client.list_workflows():
+            if workflow.name == "DreamCycleWorkflow":
+                workflows.append({
+                    "id": workflow.id,
+                    "status": workflow.status.name,
+                    "start_time": workflow.start_time.isoformat() if workflow.start_time else None,
+                })
+        
+        if not workflows:
+            return {"status": "not_started", "runs": []}
+        
+        # Get the most recent run
+        latest = workflows[0]
+        return {"status": latest["status"], "runs": workflows[:5]}
+    
+    except Exception as e:
+        return {"status": "error", "error": str(e), "runs": []}
 
 # ── Main ─────────────────────────────────────────────────────────────
 
